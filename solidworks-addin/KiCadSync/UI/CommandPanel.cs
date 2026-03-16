@@ -27,13 +27,10 @@ namespace KiCadSync.UI
 
         public void Register()
         {
-            int[] docTypes = { (int)swDocumentTypes_e.swDocPART,
-                               (int)swDocumentTypes_e.swDocASSEMBLY };
-            bool hasMenu = true, hasToolbar = true;
-
+            int cmdGroupErr = 0;
             _cmdGroup = _cmdMgr.CreateCommandGroup2(
                 _cookie, "KiCad Sync", "KiCad ↔ SolidWorks Sync",
-                "KiCad ↔ SolidWorks Sync", -1, hasMenu, hasToolbar);
+                "KiCad ↔ SolidWorks Sync", -1, false, ref cmdGroupErr);
 
             _cmdGroup.AddCommandItem2("Pull from KiCad", -1,
                 "Import board and components from KiCad",
@@ -47,8 +44,8 @@ namespace KiCadSync.UI
                 nameof(OnPush), "", CmdIdPush,
                 (int)swCommandItemType_e.swMenuItem | (int)swCommandItemType_e.swToolbarItem);
 
-            _cmdGroup.HasToolbar = hasToolbar;
-            _cmdGroup.HasMenu = hasMenu;
+            _cmdGroup.HasToolbar = true;
+            _cmdGroup.HasMenu = true;
             _cmdGroup.Activate();
         }
 
@@ -56,7 +53,7 @@ namespace KiCadSync.UI
         {
             if (_cmdGroup != null)
             {
-                _cmdMgr.RemoveCommandGroup2(_cookie, false);
+                _cmdMgr.RemoveCommandGroup(_cookie);
                 _cmdGroup = null;
             }
         }

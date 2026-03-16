@@ -32,11 +32,16 @@ def push(board: pcbnew.BOARD, sync_dir: Path) -> list:
 
 
 def _export_step(board: pcbnew.BOARD, out_path: Path):
-    exporter = pcbnew.STEP_PCB_MODEL(board)
-    exporter.SetBoardOnly(False)  # include components
-    exporter.SetIncludeUnspecified(False)
-    exporter.SetIncludeDNP(False)
-    exporter.Export(str(out_path))
+    board_path = board.GetFileName()
+    if not board_path:
+        raise RuntimeError("Board must be saved to disk before exporting STEP.")
+    subprocess.run([
+        "kicad-cli", "pcb", "export", "step",
+        "--output", str(out_path),
+        "--subst-models",
+        "--no-dnp",
+        str(board_path),
+    ], check=True)
 
 
 def _build_layout(board: pcbnew.BOARD) -> dict:

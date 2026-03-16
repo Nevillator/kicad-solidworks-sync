@@ -7,7 +7,7 @@ from pathlib import Path
 import pcbnew
 
 
-def get_pending_changes(sync_dir: Path) -> dict | None:
+def get_pending_changes(sync_dir: Path) -> list | None:
     """
     Read the mcad_to_ecad directory and return a summary of pending changes,
     or None if there's nothing new.
@@ -82,24 +82,30 @@ def _apply_board_outline(board: pcbnew.BOARD, outline_data: dict):
             line = pcbnew.PCB_SHAPE(board)
             line.SetShape(pcbnew.SHAPE_T_SEGMENT)
             line.SetLayer(pcbnew.Edge_Cuts)
-            line.SetStart(pcbnew.FromMM(seg["start"]["x_mm"]), pcbnew.FromMM(seg["start"]["y_mm"]))
-            line.SetEnd(pcbnew.FromMM(seg["end"]["x_mm"]), pcbnew.FromMM(seg["end"]["y_mm"]))
+            line.SetStart(pcbnew.VECTOR2I(pcbnew.FromMM(seg["start"]["x_mm"]),
+                                          pcbnew.FromMM(seg["start"]["y_mm"])))
+            line.SetEnd(pcbnew.VECTOR2I(pcbnew.FromMM(seg["end"]["x_mm"]),
+                                        pcbnew.FromMM(seg["end"]["y_mm"])))
             board.Add(line)
 
         elif seg["type"] == "arc":
             arc = pcbnew.PCB_SHAPE(board)
             arc.SetShape(pcbnew.SHAPE_T_ARC)
             arc.SetLayer(pcbnew.Edge_Cuts)
-            arc.SetCenter(pcbnew.FromMM(seg["center"]["x_mm"]), pcbnew.FromMM(seg["center"]["y_mm"]))
+            center = pcbnew.VECTOR2I(pcbnew.FromMM(seg["center"]["x_mm"]),
+                                     pcbnew.FromMM(seg["center"]["y_mm"]))
+            arc.SetCenter(center)
             arc.SetRadius(pcbnew.FromMM(seg["radius_mm"]))
-            arc.SetArcAngleAndEnd(seg["start_angle_deg"] * 10, seg["end_angle_deg"] * 10)
+            sweep_deg = seg["end_angle_deg"] - seg["start_angle_deg"]
+            arc.SetArcAngleAndEnd(pcbnew.EDA_ANGLE(sweep_deg, pcbnew.DEGREES_T))
             board.Add(arc)
 
     for hole in outline_data.get("holes", []):
         circle = pcbnew.PCB_SHAPE(board)
         circle.SetShape(pcbnew.SHAPE_T_CIRCLE)
         circle.SetLayer(pcbnew.Edge_Cuts)
-        circle.SetCenter(pcbnew.FromMM(hole["center"]["x_mm"]), pcbnew.FromMM(hole["center"]["y_mm"]))
+        circle.SetCenter(pcbnew.VECTOR2I(pcbnew.FromMM(hole["center"]["x_mm"]),
+                                         pcbnew.FromMM(hole["center"]["y_mm"])))
         circle.SetRadius(pcbnew.FromMM(hole["diameter_mm"] / 2))
         board.Add(circle)
 

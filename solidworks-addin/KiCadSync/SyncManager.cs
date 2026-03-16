@@ -35,14 +35,12 @@ namespace KiCadSync
             if (!File.Exists(stepPath))
                 throw new FileNotFoundException("No KiCad STEP file found.", stepPath);
 
-            int errors = 0, warnings = 0;
-            var doc = _swApp.LoadFile4(stepPath,
-                "u", // units: mm
-                null,
-                ref errors);
+            int errors = 0;
+            var importData = _swApp.GetImportFileData(stepPath);
+            var doc = _swApp.LoadFile4(stepPath, "", importData, ref errors);
 
             if (doc == null)
-                throw new Exception($"SolidWorks failed to open STEP (error {errors}).");
+                throw new Exception($"SolidWorks failed to import STEP (error {errors}).");
 
             changes.Add(new ChangeRecord { Type = "3d_model_updated" });
 

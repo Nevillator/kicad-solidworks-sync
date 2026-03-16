@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swpublished;
 using SolidWorks.Interop.swconst;
+using KiCadSync.UI;
 
 namespace KiCadSync
 {
