@@ -36,6 +36,16 @@ class PushPlugin(pcbnew.ActionPlugin):
                           "KiCad↔SW Sync", wx.OK | wx.ICON_ERROR)
             return
 
+        # Check drill origin
+        origin_warning = writer.check_drill_origin(board)
+        if origin_warning:
+            result = wx.MessageBox(
+                origin_warning + "\n\nContinue anyway?",
+                "Drill Origin Warning",
+                wx.YES_NO | wx.NO_DEFAULT | wx.ICON_WARNING)
+            if result != wx.YES:
+                return
+
         # Prompt for comment
         dlg = wx.TextEntryDialog(None, "Describe your changes (optional):", "Push to SolidWorks")
         if dlg.ShowModal() != wx.ID_OK:

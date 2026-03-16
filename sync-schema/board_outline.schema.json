@@ -1,26 +1,36 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "Board Outline",
-  "description": "Board outline geometry exported from SolidWorks",
+  "description": "Board outline geometry, holes, slots, and cutouts",
   "type": "object",
   "properties": {
     "schema_version": { "type": "string" },
-    "segments": {
+    "outer_boundary": {
       "type": "array",
-      "description": "Ordered list of outline segments forming closed loops",
+      "description": "Ordered segments forming the outer board outline (closed loop)",
       "items": { "$ref": "#/definitions/segment" }
     },
     "holes": {
       "type": "array",
-      "description": "Drilled/milled holes that are not component pads",
+      "description": "Mounting holes and slots",
       "items": { "$ref": "#/definitions/hole" }
+    },
+    "cutouts": {
+      "type": "array",
+      "description": "Arbitrary internal cutouts, each a closed loop of segments",
+      "items": {
+        "type": "array",
+        "items": { "$ref": "#/definitions/segment" }
+      }
     }
   },
+  "required": ["schema_version", "outer_boundary"],
   "definitions": {
     "segment": {
       "oneOf": [
         {
           "title": "Line",
+          "type": "object",
           "properties": {
             "type": { "const": "line" },
             "start": { "$ref": "#/definitions/point" },
@@ -30,28 +40,42 @@
         },
         {
           "title": "Arc",
+          "type": "object",
           "properties": {
             "type": { "const": "arc" },
-            "center": { "$ref": "#/definitions/point" },
-            "radius_mm": { "type": "number" },
-            "start_angle_deg": { "type": "number" },
-            "end_angle_deg": { "type": "number" },
-            "clockwise": { "type": "boolean" }
+            "start": { "$ref": "#/definitions/point" },
+            "mid": { "$ref": "#/definitions/point" },
+            "end": { "$ref": "#/definitions/point" }
           },
-          "required": ["type", "center", "radius_mm", "start_angle_deg", "end_angle_deg"]
+          "required": ["type", "start", "mid", "end"]
         }
       ]
     },
     "hole": {
-      "type": "object",
-      "properties": {
-        "type": { "enum": ["round", "slot"] },
-        "center": { "$ref": "#/definitions/point" },
-        "diameter_mm": { "type": "number" },
-        "slot_length_mm": { "type": "number", "description": "For slot holes only" },
-        "slot_angle_deg": { "type": "number", "description": "For slot holes only" }
-      },
-      "required": ["type", "center", "diameter_mm"]
+      "oneOf": [
+        {
+          "title": "Round hole",
+          "type": "object",
+          "properties": {
+            "type": { "const": "round" },
+            "center": { "$ref": "#/definitions/point" },
+            "diameter_mm": { "type": "number" }
+          },
+          "required": ["type", "center", "diameter_mm"]
+        },
+        {
+          "title": "Slot",
+          "type": "object",
+          "properties": {
+            "type": { "const": "slot" },
+            "center": { "$ref": "#/definitions/point" },
+            "width_mm": { "type": "number", "description": "Narrow dimension" },
+            "length_mm": { "type": "number", "description": "Long dimension (center to center of end radii + width)" },
+            "angle_deg": { "type": "number", "description": "Rotation of the long axis, 0 = horizontal" }
+          },
+          "required": ["type", "center", "width_mm", "length_mm", "angle_deg"]
+        }
+      ]
     },
     "point": {
       "type": "object",

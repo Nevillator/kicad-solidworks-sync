@@ -1,14 +1,25 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ECAD Layout",
-  "description": "Component placement data exported from KiCad",
+  "description": "Component placement data and board metadata exported from KiCad",
   "type": "object",
   "properties": {
     "schema_version": { "type": "string" },
+    "origin": {
+      "type": "object",
+      "description": "Coordinate origin used for STEP export and all positions in this file",
+      "properties": {
+        "type": { "enum": ["drill", "grid", "board_center"] },
+        "x_mm": { "type": "number", "description": "Origin X in KiCad board coordinates" },
+        "y_mm": { "type": "number", "description": "Origin Y in KiCad board coordinates" }
+      },
+      "required": ["type", "x_mm", "y_mm"]
+    },
     "board": {
       "type": "object",
       "properties": {
-        "thickness_mm": { "type": "number" }
+        "thickness_mm": { "type": "number" },
+        "file_name": { "type": "string", "description": "KiCad PCB filename (used to identify the board body in STEP)" }
       }
     },
     "components": {
@@ -26,12 +37,33 @@
         "layer": { "enum": ["F.Cu", "B.Cu"], "description": "Top or bottom side" },
         "position": {
           "type": "object",
+          "description": "Footprint origin position, relative to the export origin",
           "properties": {
             "x_mm": { "type": "number" },
             "y_mm": { "type": "number" },
             "rotation_deg": { "type": "number" }
           },
           "required": ["x_mm", "y_mm", "rotation_deg"]
+        },
+        "model_offset": {
+          "type": "object",
+          "description": "3D model offset from the footprint origin (as configured in KiCad)",
+          "properties": {
+            "x_mm": { "type": "number" },
+            "y_mm": { "type": "number" },
+            "z_mm": { "type": "number" }
+          },
+          "required": ["x_mm", "y_mm", "z_mm"]
+        },
+        "model_rotation": {
+          "type": "object",
+          "description": "3D model rotation (as configured in KiCad)",
+          "properties": {
+            "x_deg": { "type": "number" },
+            "y_deg": { "type": "number" },
+            "z_deg": { "type": "number" }
+          },
+          "required": ["x_deg", "y_deg", "z_deg"]
         },
         "has_3d_model": { "type": "boolean" }
       },
