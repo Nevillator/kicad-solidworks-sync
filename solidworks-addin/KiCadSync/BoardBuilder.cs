@@ -55,9 +55,7 @@ namespace KiCadSync
             // Front Plane = XY plane (normal = Z), matching KiCad's STEP export
             // where the board lies in XY and thickness goes along +Z.
 
-            var frontPlane = (IFeature)doc.FeatureByName("Front Plane");
-            doc.ClearSelection2(true);
-            frontPlane.Select2(false, 0);
+            doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
             doc.SketchManager.InsertSketch(true);
 
             var entityMap = new Dictionary<string, int>();
@@ -169,7 +167,7 @@ namespace KiCadSync
 
                 if (skSeg != null)
                 {
-                    entityMap[$"{prefix}_{i}"] = skSeg.GetID();
+                    entityMap[$"{prefix}_{i}"] = (int)skSeg.GetID();
                 }
             }
         }
@@ -194,20 +192,19 @@ namespace KiCadSync
             if (lastSketch != null)
             {
                 ((IFeature)lastSketch).Select2(false, 0);
-                doc.FeatureManager.FeatureCut4(
+                doc.FeatureManager.FeatureCut3(
                     true,   // single direction
                     false,  // not reverse
                     false,  // not both directions
                     (int)swEndConditions_e.swEndCondThroughAll,
-                    0,
+                    0,      // end condition 2
                     thickness, thickness,
                     false, false, false, false,
-                    0, 0,
+                    0, 0,   // draft angles
                     false, false, false, false,
                     false, true, true,
                     true, true,
-                    false, 0,
-                    false, false);
+                    false, 0, 0.0, false);
             }
         }
 
@@ -251,7 +248,7 @@ namespace KiCadSync
             if (lastSketch != null)
             {
                 ((IFeature)lastSketch).Select2(false, 0);
-                doc.FeatureManager.FeatureCut4(
+                doc.FeatureManager.FeatureCut3(
                     true, false, false,
                     (int)swEndConditions_e.swEndCondThroughAll,
                     0, thickness, thickness,
@@ -260,8 +257,7 @@ namespace KiCadSync
                     false, false, false, false,
                     false, true, true,
                     true, true,
-                    false, 0,
-                    false, false);
+                    false, 0, 0.0, false);
             }
         }
 
@@ -279,7 +275,7 @@ namespace KiCadSync
             if (lastSketch != null)
             {
                 ((IFeature)lastSketch).Select2(false, 0);
-                doc.FeatureManager.FeatureCut4(
+                doc.FeatureManager.FeatureCut3(
                     true, false, false,
                     (int)swEndConditions_e.swEndCondThroughAll,
                     0, thickness, thickness,
@@ -288,8 +284,7 @@ namespace KiCadSync
                     false, false, false, false,
                     false, true, true,
                     true, true,
-                    false, 0,
-                    false, false);
+                    false, 0, 0.0, false);
             }
         }
 
@@ -344,7 +339,7 @@ namespace KiCadSync
         private ISketch _GetLastSketch(IModelDoc2 doc)
         {
             // Walk features in reverse to find the most recently added sketch
-            IFeature feat = doc.FirstFeature();
+            IFeature feat = (IFeature)doc.FirstFeature();
             ISketch lastSketch = null;
 
             while (feat != null)

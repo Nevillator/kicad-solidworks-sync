@@ -189,12 +189,12 @@ namespace KiCadSync
                             var name = comp.Name2 ?? "";
                             // Board component matches the KiCad PCB filename
                             if (!string.IsNullOrEmpty(boardFileName) &&
-                                name.Contains(boardFileName, StringComparison.OrdinalIgnoreCase))
+                                name.IndexOf(boardFileName, StringComparison.OrdinalIgnoreCase) >= 0)
                             {
                                 return comp.GetModelDoc2() as IModelDoc2;
                             }
                             // Fallback: look for "Board" in the name
-                            if (name.Contains("Board", StringComparison.OrdinalIgnoreCase))
+                            if (name.IndexOf("Board", StringComparison.OrdinalIgnoreCase) >= 0)
                             {
                                 return comp.GetModelDoc2() as IModelDoc2;
                             }

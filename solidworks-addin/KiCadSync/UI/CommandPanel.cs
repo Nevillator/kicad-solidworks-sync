@@ -107,7 +107,7 @@ namespace KiCadSync.UI
 
         private string? GetSyncDir()
         {
-            var dir = Environment.GetEnvironmentVariable("KICAD_SW_SYNC_DIR");
+            var dir = System.Environment.GetEnvironmentVariable("KICAD_SW_SYNC_DIR");
             if (!string.IsNullOrEmpty(dir)) return dir;
 
             // Prompt user to select sync directory

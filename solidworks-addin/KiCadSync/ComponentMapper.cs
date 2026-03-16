@@ -63,7 +63,7 @@ namespace KiCadSync
                 // Check if this is the board component
                 // KiCad STEP export names the board after the PCB file
                 if (!string.IsNullOrEmpty(boardFileName) &&
-                    name.Contains(boardFileName, StringComparison.OrdinalIgnoreCase))
+                    name.IndexOf(boardFileName, StringComparison.OrdinalIgnoreCase) >= 0)
                 {
                     map.BoardComponent = swComp;
                     continue;

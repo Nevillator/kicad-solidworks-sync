@@ -28,7 +28,7 @@ namespace KiCadSync
 
             // ── Read the outer boundary from the base extrude's sketch ──────
 
-            IFeature feat = boardDoc.FirstFeature();
+            IFeature feat = (IFeature)boardDoc.FirstFeature();
             ISketch outerSketch = null;
             var cutSketches = new List<ISketch>();
 
@@ -127,18 +127,21 @@ namespace KiCadSync
                     if (arc == null) continue;
                     var sp = arc.GetStartPoint2() as ISketchPoint;
                     var ep = arc.GetEndPoint2() as ISketchPoint;
-                    if (sp == null || ep == null) continue;
-
-                    // Compute the arc midpoint from center, radius, start/end angles
                     var cp = arc.GetCenterPoint2() as ISketchPoint;
-                    double radius = arc.GetRadius();
-                    double startAngle = arc.GetStartAngle();
-                    double endAngle = arc.GetEndAngle();
-                    double midAngle = (startAngle + endAngle) / 2.0;
+                    if (sp == null || ep == null || cp == null) continue;
 
-                    // If the arc wraps around (end < start), adjust
-                    if (endAngle < startAngle)
-                        midAngle = (startAngle + endAngle + 2 * Math.PI) / 2.0;
+                    // Compute arc midpoint geometrically from center, start, end
+                    double startAngle = Math.Atan2(sp.Y - cp.Y, sp.X - cp.X);
+                    double endAngle = Math.Atan2(ep.Y - cp.Y, ep.X - cp.X);
+                    double radius = Math.Sqrt(
+                        (sp.X - cp.X) * (sp.X - cp.X) +
+                        (sp.Y - cp.Y) * (sp.Y - cp.Y));
+
+                    // Midpoint angle — bisect the arc
+                    double midAngle = (startAngle + endAngle) / 2.0;
+                    // If the shorter arc is on the other side, flip
+                    if (Math.Abs(endAngle - startAngle) > Math.PI)
+                        midAngle += Math.PI;
 
                     double mx = cp.X + radius * Math.Cos(midAngle);
                     double my = cp.Y + radius * Math.Sin(midAngle);
@@ -148,8 +151,8 @@ namespace KiCadSync
                         Start = _SwPointToKiCad(sp),
                         Mid = new PointData
                         {
-                            X = mx * 1000.0,       // meters to mm
-                            Y = -(my * 1000.0),     // flip Y
+                            X = mx * 1000.0,        // meters to mm
+                            Y = -(my * 1000.0),      // flip Y
                         },
                         End = _SwPointToKiCad(ep),
                     });
