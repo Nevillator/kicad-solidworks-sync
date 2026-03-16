@@ -1,0 +1,18 @@
+# SolidWorks add-in (C#)
+solidworks-addin/*/bin/
+solidworks-addin/*/obj/
+solidworks-addin/.vs/
+*.user
+*.suo
+
+# KiCad plugin
+kicad-plugin/__pycache__/
+kicad-plugin/**/__pycache__/
+*.pyc
+
+# Sync directory contents (don't commit sync state to the project repo)
+sync-dir/
+
+# OS
+.DS_Store
+Thumbs.db

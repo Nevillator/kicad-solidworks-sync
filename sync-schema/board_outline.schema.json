@@ -1,0 +1,65 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Board Outline",
+  "description": "Board outline geometry exported from SolidWorks",
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "string" },
+    "segments": {
+      "type": "array",
+      "description": "Ordered list of outline segments forming closed loops",
+      "items": { "$ref": "#/definitions/segment" }
+    },
+    "holes": {
+      "type": "array",
+      "description": "Drilled/milled holes that are not component pads",
+      "items": { "$ref": "#/definitions/hole" }
+    }
+  },
+  "definitions": {
+    "segment": {
+      "oneOf": [
+        {
+          "title": "Line",
+          "properties": {
+            "type": { "const": "line" },
+            "start": { "$ref": "#/definitions/point" },
+            "end": { "$ref": "#/definitions/point" }
+          },
+          "required": ["type", "start", "end"]
+        },
+        {
+          "title": "Arc",
+          "properties": {
+            "type": { "const": "arc" },
+            "center": { "$ref": "#/definitions/point" },
+            "radius_mm": { "type": "number" },
+            "start_angle_deg": { "type": "number" },
+            "end_angle_deg": { "type": "number" },
+            "clockwise": { "type": "boolean" }
+          },
+          "required": ["type", "center", "radius_mm", "start_angle_deg", "end_angle_deg"]
+        }
+      ]
+    },
+    "hole": {
+      "type": "object",
+      "properties": {
+        "type": { "enum": ["round", "slot"] },
+        "center": { "$ref": "#/definitions/point" },
+        "diameter_mm": { "type": "number" },
+        "slot_length_mm": { "type": "number", "description": "For slot holes only" },
+        "slot_angle_deg": { "type": "number", "description": "For slot holes only" }
+      },
+      "required": ["type", "center", "diameter_mm"]
+    },
+    "point": {
+      "type": "object",
+      "properties": {
+        "x_mm": { "type": "number" },
+        "y_mm": { "type": "number" }
+      },
+      "required": ["x_mm", "y_mm"]
+    }
+  }
+}

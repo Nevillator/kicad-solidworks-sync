@@ -1,0 +1,41 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ECAD Layout",
+  "description": "Component placement data exported from KiCad",
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "string" },
+    "board": {
+      "type": "object",
+      "properties": {
+        "thickness_mm": { "type": "number" }
+      }
+    },
+    "components": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/component" }
+    }
+  },
+  "definitions": {
+    "component": {
+      "type": "object",
+      "properties": {
+        "ref": { "type": "string", "description": "Reference designator, e.g. U1, R3" },
+        "value": { "type": "string" },
+        "footprint": { "type": "string" },
+        "layer": { "enum": ["F.Cu", "B.Cu"], "description": "Top or bottom side" },
+        "position": {
+          "type": "object",
+          "properties": {
+            "x_mm": { "type": "number" },
+            "y_mm": { "type": "number" },
+            "rotation_deg": { "type": "number" }
+          },
+          "required": ["x_mm", "y_mm", "rotation_deg"]
+        },
+        "has_3d_model": { "type": "boolean" }
+      },
+      "required": ["ref", "layer", "position"]
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Sync Manifest",
+  "description": "Tracks the sync state and change history between KiCad and SolidWorks",
+  "type": "object",
+  "properties": {
+    "schema_version": { "type": "string" },
+    "project_name": { "type": "string" },
+    "last_push": { "$ref": "#/definitions/push_record" },
+    "history": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/push_record" }
+    }
+  },
+  "definitions": {
+    "push_record": {
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "UUID for this push" },
+        "timestamp": { "type": "string", "format": "date-time" },
+        "direction": { "enum": ["ecad_to_mcad", "mcad_to_ecad"] },
+        "author": { "type": "string" },
+        "comment": { "type": "string" },
+        "changes": {
+          "type": "array",
+          "items": { "$ref": "#/definitions/change" }
+        }
+      },
+      "required": ["id", "timestamp", "direction", "changes"]
+    },
+    "change": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "enum": [
+            "board_outline_updated",
+            "component_added",
+            "component_removed",
+            "component_moved",
+            "component_rotated",
+            "component_flipped",
+            "3d_model_updated"
+          ]
+        },
+        "ref": { "type": "string", "description": "Component reference designator, if applicable" },
+        "from": { "description": "Previous value" },
+        "to": { "description": "New value" }
+      },
+      "required": ["type"]
+    }
+  }
+}
