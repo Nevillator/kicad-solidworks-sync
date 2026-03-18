@@ -23,6 +23,22 @@ namespace KiCadSync
             _swApp = swApp;
         }
 
+        private void _BeginDraw(IModelDoc2 doc)
+        {
+            doc.SketchManager.AddToDB = true;
+            doc.SketchManager.AutoSolve = false;
+            _swApp.SetUserPreferenceToggle(
+                (int)swUserPreferenceToggle_e.swSketchAutomaticRelations, false);
+        }
+
+        private void _EndDraw(IModelDoc2 doc)
+        {
+            doc.SketchManager.AddToDB = false;
+            doc.SketchManager.AutoSolve = true;
+            _swApp.SetUserPreferenceToggle(
+                (int)swUserPreferenceToggle_e.swSketchAutomaticRelations, true);
+        }
+
         /// <summary>
         /// Create a new native SolidWorks part from board outline JSON.
         /// Returns the path to the saved .sldprt file.
@@ -58,11 +74,13 @@ namespace KiCadSync
             doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
             doc.SketchManager.InsertSketch(true);
             SwAddin.Log("BoardBuilder: sketch opened, drawing segments...");
+            _BeginDraw(doc);
 
             var entityMap = new Dictionary<string, int>();
             _DrawSegments(doc.SketchManager, outerBoundary, entityMap, "outer");
 
             var outlineSketch = doc.SketchManager.ActiveSketch; // capture BEFORE closing
+            _EndDraw(doc);
             SwAddin.Log("BoardBuilder: closing sketch...");
             doc.SketchManager.InsertSketch(true); // close sketch
 
@@ -240,6 +258,55 @@ namespace KiCadSync
             return line1 != null && arc2 != null && line2 != null && arc1 != null;
         }
 
+        private bool _DrawStadiumOrSlot(ISketchManager skMgr,
+            double cx, double cy, double w, double h, double angleDeg)
+        {
+            double angleRad = angleDeg * Math.PI / 180.0;
+            double axisX =  Math.Cos(angleRad);
+            double axisY = -Math.Sin(angleRad);
+            double halfLen = (h - w) / 2.0;
+
+            // p1 = final arc center 1; SW preserves p1 position when slot.Length is set
+            double p1x = cx - halfLen * axisX,  p1y = cy - halfLen * axisY;
+            // p2 = arc center 2 at safe large distance (4×w from p1 = 5×w total length)
+            double safeDist = w * 4.0;
+            double p2x = p1x + safeDist * axisX,  p2y = p1y + safeDist * axisY;
+
+            try
+            {
+                skMgr.AddToDB = false;
+
+                SwAddin.Log($"      CreateSketchSlot: p1=({p1x*1000:F3},{p1y*1000:F3}) safe p2=({p2x*1000:F3},{p2y*1000:F3}) w={w*1000:F3}mm");
+                var slot = skMgr.CreateSketchSlot(
+                    (int)swSketchSlotCreationType_e.swSketchSlotCreationType_line,
+                    (int)swSketchSlotLengthType_e.swSketchSlotLengthType_CenterCenter,
+                    w, p1x, p1y, 0, p2x, p2y, 0, 0, 0, 0, 1, false) as ISketchSlot;
+
+                if (slot != null)
+                {
+                    double targetCtoC = h - w;
+                    SwAddin.Log($"      Resizing length to {targetCtoC*1000:F3}mm (c-to-c)");
+                    slot.Length = targetCtoC;
+                }
+
+                skMgr.AddToDB = true;
+
+                if (slot != null)
+                {
+                    SwAddin.Log($"      CreateSketchSlot OK");
+                    return true;
+                }
+                SwAddin.Log($"      CreateSketchSlot returned null, falling back to stadium");
+            }
+            catch (Exception ex)
+            {
+                skMgr.AddToDB = true;
+                SwAddin.Log($"      CreateSketchSlot threw: {ex.Message}, falling back");
+            }
+
+            return _DrawStadium(skMgr, cx, cy, w, h, angleDeg);
+        }
+
         private void _AddRoundHole(IModelDoc2 doc, JToken hole, double thicknessMm)
         {
             double cx = (double)hole["center"]["x_mm"] / 1000.0;
@@ -249,9 +316,11 @@ namespace KiCadSync
 
             doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
             doc.SketchManager.InsertSketch(true);
+            _BeginDraw(doc);
 
             doc.SketchManager.CreateCircle(cx, cy, 0, cx + radius, cy, 0);
             var rhSketch = doc.SketchManager.ActiveSketch;
+            _EndDraw(doc);
             doc.SketchManager.InsertSketch(true);
 
             if (rhSketch != null)
@@ -289,10 +358,12 @@ namespace KiCadSync
 
             doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
             doc.SketchManager.InsertSketch(true);
+            _BeginDraw(doc);
 
-            _DrawStadium(doc.SketchManager, cx, cy, width, length, angleDeg);
+            _DrawStadiumOrSlot(doc.SketchManager, cx, cy, width, length, angleDeg);
 
             var slotSketch = doc.SketchManager.ActiveSketch;
+            _EndDraw(doc);
             doc.SketchManager.InsertSketch(true);
 
             if (slotSketch == null) { SwAddin.Log("  WARN: slot sketch null"); return; }
@@ -317,8 +388,10 @@ namespace KiCadSync
         {
             doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
             doc.SketchManager.InsertSketch(true);
+            _BeginDraw(doc);
             _DrawSegments(doc.SketchManager, segments, entityMap, prefix);
             var cutoutSketch = doc.SketchManager.ActiveSketch;
+            _EndDraw(doc);
             doc.SketchManager.InsertSketch(true);
 
             if (cutoutSketch != null)
@@ -363,12 +436,7 @@ namespace KiCadSync
 
                 doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
                 doc.SketchManager.InsertSketch(true);
-                bool prevAutoRel = _swApp.GetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swSketchAutomaticRelations);
-                _swApp.SetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swSketchAutomaticRelations, false);
-                doc.SketchManager.AutoSolve = false;
-                doc.SketchManager.AddToDB = true;
+                _BeginDraw(doc);
 
                 int drawn = 0;
                 for (int pi = 0; pi < pads.Count; pi++)
@@ -401,15 +469,12 @@ namespace KiCadSync
                             if (circ != null) drawn++;
                             continue;
                         }
-                        if (_DrawStadium(doc.SketchManager, cx, cy, w, h, angleDeg)) drawn++;
+                        if (_DrawStadiumOrSlot(doc.SketchManager, cx, cy, w, h, angleDeg)) drawn++;
                     }
                 }
 
                 var sk = doc.SketchManager.ActiveSketch;
-                doc.SketchManager.AddToDB = false;
-                doc.SketchManager.AutoSolve = true;
-                _swApp.SetUserPreferenceToggle(
-                    (int)swUserPreferenceToggle_e.swSketchAutomaticRelations, prevAutoRel);
+                _EndDraw(doc);
                 doc.SketchManager.InsertSketch(true);
 
                 SwAddin.Log($"    drawn={drawn}, sketch={sk != null}");
