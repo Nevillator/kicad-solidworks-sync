@@ -10,6 +10,7 @@
     <!-- COM registration done manually via regasm at install time -->
     <RegisterForComInterop>false</RegisterForComInterop>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
+    <OutputPath>bin\x64\Debug\staging\</OutputPath>
   </PropertyGroup>
 
   <!-- SolidWorks interop assemblies — adjust path to match your SW installation -->
@@ -17,17 +18,17 @@
     <Reference Include="SolidWorks.Interop.sldworks">
       <HintPath>$(SOLIDWORKS_PATH)\api\redist\SolidWorks.Interop.sldworks.dll</HintPath>
       <EmbedInteropTypes>false</EmbedInteropTypes>
-      <Private>false</Private>
+      <Private>true</Private>
     </Reference>
     <Reference Include="SolidWorks.Interop.swconst">
       <HintPath>$(SOLIDWORKS_PATH)\api\redist\SolidWorks.Interop.swconst.dll</HintPath>
       <EmbedInteropTypes>false</EmbedInteropTypes>
-      <Private>false</Private>
+      <Private>true</Private>
     </Reference>
     <Reference Include="SolidWorks.Interop.swpublished">
       <HintPath>$(SOLIDWORKS_PATH)\api\redist\SolidWorks.Interop.swpublished.dll</HintPath>
       <EmbedInteropTypes>false</EmbedInteropTypes>
-      <Private>false</Private>
+      <Private>true</Private>
     </Reference>
   </ItemGroup>
 

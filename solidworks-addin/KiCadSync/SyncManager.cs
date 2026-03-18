@@ -37,6 +37,7 @@ namespace KiCadSync
             var layoutPath = Path.Combine(_syncDir, "ecad_to_mcad", "layout.json");
             var stepPath = Path.Combine(_syncDir, "ecad_to_mcad", "board.step");
 
+            SwAddin.Log("Pull: checking files...");
             if (!File.Exists(outlinePath))
                 throw new FileNotFoundException("No board outline data from KiCad.", outlinePath);
             if (!File.Exists(layoutPath))
@@ -44,14 +45,17 @@ namespace KiCadSync
 
             var layout = JObject.Parse(File.ReadAllText(layoutPath));
             var thicknessMm = (double)(layout["board"]?["thickness_mm"] ?? 1.6);
+            SwAddin.Log($"Pull: thickness={thicknessMm}mm");
 
             // ── Step 1: Create native board part from outline ────────────────
 
             var saveDir = Path.Combine(_syncDir, "sw_working");
             Directory.CreateDirectory(saveDir);
 
+            SwAddin.Log("Pull: creating board part...");
             var builder = new BoardBuilder(_swApp);
             var boardPartPath = builder.CreateBoardPart(outlinePath, thicknessMm, saveDir);
+            SwAddin.Log($"Pull: board part saved to {boardPartPath}");
             changes.Add(new ChangeRecord { Type = "board_outline_updated" });
 
             // ── Step 2: Import STEP to get component 3D models ──────────────
@@ -59,19 +63,29 @@ namespace KiCadSync
             IModelDoc2? stepDoc = null;
             if (File.Exists(stepPath))
             {
+                SwAddin.Log("Pull: importing STEP...");
                 int errors = 0;
                 var importData = _swApp.GetImportFileData(stepPath);
+                SwAddin.Log($"Pull: importData={importData != null}");
                 stepDoc = _swApp.LoadFile4(stepPath, "", importData, ref errors);
+                SwAddin.Log($"Pull: STEP loaded, errors={errors}, doc={stepDoc != null}");
             }
 
             // ── Step 3: Build assembly ──────────────────────────────────────
 
+            SwAddin.Log("Pull: creating assembly...");
             var assemblyPath = Path.Combine(saveDir, "Board_Assembly.sldasm");
-            var assemblyDoc = _CreateAssembly(boardPartPath, stepDoc, layout, assemblyPath);
+            var assemblyDoc = _CreateAssembly(boardPartPath, stepDoc, layout, assemblyPath, saveDir, thicknessMm);
+            SwAddin.Log($"Pull: assembly created={assemblyDoc != null}");
 
             // Close the temporary STEP import if we opened one
             if (stepDoc != null)
-                _swApp.CloseDoc(((IModelDoc2)stepDoc).GetTitle());
+            {
+                var stepTitle = stepDoc.GetTitle() as string;
+                SwAddin.Log($"Pull: closing STEP doc '{stepTitle}'");
+                if (!string.IsNullOrEmpty(stepTitle))
+                    _swApp.CloseDoc(stepTitle);
+            }
 
             changes.Add(new ChangeRecord { Type = "3d_model_updated" });
 
@@ -128,7 +142,7 @@ namespace KiCadSync
         // ── Assembly creation ───────────────────────────────────────────────────
 
         private IModelDoc2? _CreateAssembly(string boardPartPath, IModelDoc2? stepDoc,
-            JObject layout, string assemblyPath)
+            JObject layout, string assemblyPath, string saveDir, double thicknessMm)
         {
             // Create new assembly
             var asmDoc = _swApp.NewDocument(
@@ -139,19 +153,28 @@ namespace KiCadSync
 
             var assembly = asmDoc as IAssemblyDoc;
 
-            // Add the board part as the first (fixed) component
+            // Board part: top face at Z=0, bottom at Z=-thickness (matches KiCad STEP convention).
             assembly.AddComponent5(boardPartPath, 0, "", false, "", 0, 0, 0);
 
-            // If we have the STEP import open, we can extract individual component
-            // bodies and save them as separate parts, then add to the assembly.
-            // For now, add the entire STEP as a single component — the ComponentMapper
-            // will handle identifying individual parts within it.
+            // STEP sub-assembly: KiCad exports with IDF convention (B.Cu/bottom at Z=0,
+            // F.Cu/top at Z=+thickness). Offset by -thickness so the bottom face aligns
+            // with our .sldprt bottom at Z=-thickness.
             if (stepDoc != null)
             {
-                var stepTitle = stepDoc.GetTitle() as string;
-                var stepPathOnDisk = stepDoc.GetPathName();
-                if (!string.IsNullOrEmpty(stepPathOnDisk))
-                    assembly.AddComponent5(stepPathOnDisk, 0, "", false, "", 0, 0, 0);
+                var stepSavePath = Path.Combine(saveDir, "Components.sldasm");
+                int stepErr = 0, stepWarn = 0;
+                SwAddin.Log($"Pull: saving STEP import to {stepSavePath}");
+
+                stepDoc.Extension.SaveAs3(stepSavePath,
+                    (int)swSaveAsVersion_e.swSaveAsCurrentVersion,
+                    (int)swSaveAsOptions_e.swSaveAsOptions_Silent,
+                    null, null, ref stepErr, ref stepWarn);
+                SwAddin.Log($"Pull: STEP saved, err={stepErr}, warn={stepWarn}");
+
+                double zOffsetM = -thicknessMm / 1000.0;
+                SwAddin.Log($"Pull: placing STEP at Z={zOffsetM * 1000:F3}mm");
+                assembly.AddComponent5(stepSavePath, 0, "", false, "", 0, 0, zOffsetM);
+                SwAddin.Log("Pull: STEP sub-assembly added to main assembly");
             }
 
             // Save

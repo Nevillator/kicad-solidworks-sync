@@ -141,25 +141,30 @@ def _build_board_outline(board: pcbnew.BOARD) -> dict:
     """
     Extract all Edge_Cuts geometry, build closed loops, and classify them
     as outer boundary, holes, slots, or cutouts.
+    Also extracts pad drill holes and footprint-level Edge_Cuts.
     """
     settings = board.GetDesignSettings()
     origin = settings.GetAuxOrigin()
     origin_x = pcbnew.ToMM(origin.x)
     origin_y = pcbnew.ToMM(origin.y)
 
-    # Gather all Edge_Cuts segments
+    # Gather all Edge_Cuts segments (board-level and footprint-level)
     raw_segments = []
     for drawing in board.GetDrawings():
         if drawing.GetLayer() != pcbnew.Edge_Cuts:
             continue
-        seg = _drawing_to_segment(drawing, origin_x, origin_y)
-        if seg is not None:
-            raw_segments.append(seg)
+        raw_segments.extend(_drawing_to_segments(drawing, origin_x, origin_y))
+
+    for fp in board.GetFootprints():
+        for item in fp.GraphicalItems():
+            if item.GetLayer() == pcbnew.Edge_Cuts:
+                raw_segments.extend(_drawing_to_segments(item, origin_x, origin_y))
 
     # Build closed loops from the segments
     loops = _build_loops(raw_segments)
     if not loops:
-        return {"schema_version": "1.0", "outer_boundary": [], "holes": [], "cutouts": []}
+        return {"schema_version": "1.0", "outer_boundary": [], "holes": [],
+                "cutouts": [], "drills": []}
 
     # The outer boundary is the loop with the largest bounding area
     loops.sort(key=_loop_area, reverse=True)
@@ -176,54 +181,118 @@ def _build_board_outline(board: pcbnew.BOARD) -> dict:
         else:
             cutouts.append(loop)
 
+    # Extract pad drill holes
+    drills = _extract_drills(board, origin_x, origin_y)
+
     return {
         "schema_version": "1.0",
         "outer_boundary": outer,
         "holes": holes,
         "cutouts": cutouts,
+        "drills": drills,
     }
 
 
-def _drawing_to_segment(drawing, origin_x: float, origin_y: float) -> dict | None:
-    """Convert a PCB_SHAPE on Edge_Cuts to a segment dict."""
+def _extract_drills(board: pcbnew.BOARD, origin_x: float, origin_y: float) -> list:
+    """Extract drill holes grouped by footprint reference."""
+    footprint_drills = []
+    for fp in board.GetFootprints():
+        pads = []
+        for pad in fp.Pads():
+            drill = pad.GetDrillSize()
+            if drill.x <= 0:
+                continue
+
+            pos = pad.GetPosition()
+            x = pcbnew.ToMM(pos.x) - origin_x
+            y = pcbnew.ToMM(pos.y) - origin_y
+            dx = pcbnew.ToMM(drill.x)
+            dy = pcbnew.ToMM(drill.y)
+
+            if dx == dy:
+                pads.append({
+                    "type": "round",
+                    "center": {"x_mm": x, "y_mm": y},
+                    "diameter_mm": dx,
+                })
+            else:
+                rot_deg = pad.GetOrientationDegrees()
+                pads.append({
+                    "type": "oval",
+                    "center": {"x_mm": x, "y_mm": y},
+                    "width_mm": min(dx, dy),
+                    "height_mm": max(dx, dy),
+                    "angle_deg": rot_deg,
+                })
+
+        if pads:
+            footprint_drills.append({
+                "ref": fp.GetReference(),
+                "pads": pads,
+            })
+
+    return footprint_drills
+
+
+def _point(pt, origin_x: float, origin_y: float) -> dict:
+    return {"x_mm": pcbnew.ToMM(pt.x) - origin_x, "y_mm": pcbnew.ToMM(pt.y) - origin_y}
+
+
+def _drawing_to_segments(drawing, origin_x: float, origin_y: float) -> list:
+    """Convert a PCB_SHAPE on Edge_Cuts to one or more segment dicts."""
     shape = drawing.GetShape()
 
     if shape == pcbnew.SHAPE_T_SEGMENT:
-        start = drawing.GetStart()
-        end = drawing.GetEnd()
-        return {
+        return [{
             "type": "line",
-            "start": {"x_mm": pcbnew.ToMM(start.x) - origin_x,
-                       "y_mm": pcbnew.ToMM(start.y) - origin_y},
-            "end":   {"x_mm": pcbnew.ToMM(end.x) - origin_x,
-                       "y_mm": pcbnew.ToMM(end.y) - origin_y},
-        }
+            "start": _point(drawing.GetStart(), origin_x, origin_y),
+            "end":   _point(drawing.GetEnd(), origin_x, origin_y),
+        }]
 
     if shape == pcbnew.SHAPE_T_ARC:
-        start = drawing.GetStart()
-        mid = drawing.GetArcMid()
-        end = drawing.GetEnd()
-        return {
+        return [{
             "type": "arc",
-            "start": {"x_mm": pcbnew.ToMM(start.x) - origin_x,
-                       "y_mm": pcbnew.ToMM(start.y) - origin_y},
-            "mid":   {"x_mm": pcbnew.ToMM(mid.x) - origin_x,
-                       "y_mm": pcbnew.ToMM(mid.y) - origin_y},
-            "end":   {"x_mm": pcbnew.ToMM(end.x) - origin_x,
-                       "y_mm": pcbnew.ToMM(end.y) - origin_y},
-        }
+            "start": _point(drawing.GetStart(), origin_x, origin_y),
+            "mid":   _point(drawing.GetArcMid(), origin_x, origin_y),
+            "end":   _point(drawing.GetEnd(), origin_x, origin_y),
+        }]
 
     if shape == pcbnew.SHAPE_T_CIRCLE:
         center = drawing.GetCenter()
-        radius = pcbnew.ToMM(drawing.GetRadius())
-        return {
+        return [{
             "type": "circle",
-            "center": {"x_mm": pcbnew.ToMM(center.x) - origin_x,
-                        "y_mm": pcbnew.ToMM(center.y) - origin_y},
-            "radius_mm": radius,
-        }
+            "center": _point(center, origin_x, origin_y),
+            "radius_mm": pcbnew.ToMM(drawing.GetRadius()),
+        }]
 
-    return None
+    if shape == pcbnew.SHAPE_T_RECT:
+        # Rectangle → 4 line segments
+        corners = [_point(c, origin_x, origin_y) for c in drawing.GetCorners()]
+        segs = []
+        for i in range(len(corners)):
+            segs.append({
+                "type": "line",
+                "start": corners[i],
+                "end": corners[(i + 1) % len(corners)],
+            })
+        return segs
+
+    if shape == pcbnew.SHAPE_T_POLY:
+        # Polygon → N line segments
+        outline = drawing.GetPolyShape().Outline(0)
+        count = outline.PointCount()
+        segs = []
+        for i in range(count):
+            pt_a = outline.CPoint(i)
+            pt_b = outline.CPoint((i + 1) % count)
+            segs.append({
+                "type": "line",
+                "start": _point(pt_a, origin_x, origin_y),
+                "end": _point(pt_b, origin_x, origin_y),
+            })
+        return segs
+
+    return []
 
 
 def _seg_start(seg: dict) -> tuple:

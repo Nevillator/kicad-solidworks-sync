@@ -14,7 +14,6 @@ namespace KiCadSync
     public class BoardBuilder
     {
         private readonly ISldWorks _swApp;
-        private readonly IMathUtility _mathUtil;
 
         // Sketch entity ID sidecar file name (stored alongside the SW part)
         private const string EntityMapFile = "_kicad_sketch_map.json";
@@ -22,7 +21,6 @@ namespace KiCadSync
         public BoardBuilder(ISldWorks swApp)
         {
             _swApp = swApp;
-            _mathUtil = _swApp.IGetMathUtility();
         }
 
         /// <summary>
@@ -35,11 +33,12 @@ namespace KiCadSync
             var outerBoundary = outline["outer_boundary"] as JArray ?? new JArray();
             var holes = outline["holes"] as JArray ?? new JArray();
             var cutouts = outline["cutouts"] as JArray ?? new JArray();
+            SwAddin.Log($"BoardBuilder: outer={outerBoundary.Count} segs, holes={holes.Count}, cutouts={cutouts.Count}");
 
             // Create new part
-            var doc = _swApp.NewDocument(
-                _swApp.GetUserPreferenceStringValue((int)swUserPreferenceStringValue_e.swDefaultTemplatePart),
-                0, 0, 0) as IModelDoc2;
+            var template = _swApp.GetUserPreferenceStringValue((int)swUserPreferenceStringValue_e.swDefaultTemplatePart);
+            SwAddin.Log($"BoardBuilder: template='{template}'");
+            var doc = _swApp.NewDocument(template, 0, 0, 0) as IModelDoc2;
             if (doc == null)
                 throw new Exception("Failed to create new SolidWorks part.");
 
@@ -55,24 +54,32 @@ namespace KiCadSync
             // Front Plane = XY plane (normal = Z), matching KiCad's STEP export
             // where the board lies in XY and thickness goes along +Z.
 
+            SwAddin.Log("BoardBuilder: selecting Front Plane...");
             doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
             doc.SketchManager.InsertSketch(true);
+            SwAddin.Log("BoardBuilder: sketch opened, drawing segments...");
 
             var entityMap = new Dictionary<string, int>();
             _DrawSegments(doc.SketchManager, outerBoundary, entityMap, "outer");
+
+            var outlineSketch = doc.SketchManager.ActiveSketch; // capture BEFORE closing
+            SwAddin.Log("BoardBuilder: closing sketch...");
             doc.SketchManager.InsertSketch(true); // close sketch
 
             // ── Step 2: Extrude the outline to board thickness ──────────────
+            // Extrude in -Z direction so: top face (component side) = Z=0,
+            // bottom face = Z=-thickness.  This matches KiCad's STEP export
+            // convention where the component side is at Z=0.
 
-            // Select the sketch we just created
-            var lastSketch = _GetLastSketch(doc);
-            if (lastSketch != null)
+            SwAddin.Log($"BoardBuilder: outlineSketch={outlineSketch != null}");
+            if (outlineSketch != null)
             {
-                ((IFeature)lastSketch).Select2(false, 0);
+                ((IFeature)outlineSketch).Select2(false, 0);
                 var thicknessMeters = thicknessMm / 1000.0;
+                SwAddin.Log($"BoardBuilder: extruding {thicknessMeters}m in -Z...");
                 doc.FeatureManager.FeatureExtrusion2(
                     true,   // single direction
-                    false,  // not reverse
+                    true,   // REVERSE direction → extrude toward -Z
                     false,  // not both directions
                     (int)swEndConditions_e.swEndCondBlind,
                     0,      // end condition 2 (unused)
@@ -106,6 +113,13 @@ namespace KiCadSync
                 _AddCutout(doc, cutoutSegs, thicknessMm, entityMap, $"cutout_{i}");
             }
 
+            // ── Step 5: Add pad drill holes ──────────────────────────────────
+
+            var drills = outline["drills"] as JArray ?? new JArray();
+            SwAddin.Log($"BoardBuilder: {drills.Count} drills to add");
+            if (drills.Count > 0)
+                _AddDrills(doc, drills, thicknessMm);
+
             // ── Save ────────────────────────────────────────────────────────
 
             var savePath = Path.Combine(saveDir, "Board.sldprt");
@@ -135,7 +149,8 @@ namespace KiCadSync
                 if (seg == null) continue;
 
                 var segType = seg["type"]?.ToString();
-                ISketchSegment skSeg = null;
+                SwAddin.Log($"  Drawing {prefix}_{i}: type={segType}");
+                object? skSegObj = null;
 
                 if (segType == "line")
                 {
@@ -146,7 +161,9 @@ namespace KiCadSync
                     double ex = (double)e["x_mm"] / 1000.0;
                     double ey = -(double)e["y_mm"] / 1000.0;
 
-                    skSeg = skMgr.CreateLine(sx, sy, 0, ex, ey, 0) as ISketchSegment;
+                    SwAddin.Log($"    Line ({sx},{sy}) -> ({ex},{ey})");
+                    skSegObj = skMgr.CreateLine(sx, sy, 0, ex, ey, 0);
+                    SwAddin.Log($"    CreateLine returned: {skSegObj?.GetType().Name ?? "null"}");
                 }
                 else if (segType == "arc")
                 {
@@ -160,16 +177,67 @@ namespace KiCadSync
                     double ex = (double)e["x_mm"] / 1000.0;
                     double ey = -(double)e["y_mm"] / 1000.0;
 
-                    // Create arc through three points
-                    skSeg = skMgr.Create3PointArc(sx, sy, 0, ex, ey, 0, mx, my, 0)
-                            as ISketchSegment;
+                    skSegObj = skMgr.Create3PointArc(sx, sy, 0, ex, ey, 0, mx, my, 0);
                 }
 
-                if (skSeg != null)
+                if (skSegObj is ISketchSegment skSeg)
                 {
-                    entityMap[$"{prefix}_{i}"] = (int)skSeg.GetID();
+                    try
+                    {
+                        var id = skSeg.GetID();
+                        entityMap[$"{prefix}_{i}"] = Convert.ToInt32(id);
+                    }
+                    catch (Exception ex)
+                    {
+                        SwAddin.Log($"    GetID failed: {ex.Message}");
+                    }
                 }
             }
+        }
+
+        /// <summary>
+        /// Draws a stadium (slot) profile into the currently open sketch.
+        /// Returns true if all 4 entities were created successfully.
+        /// Assumes sketch is already open on Front Plane.
+        /// </summary>
+        private bool _DrawStadium(ISketchManager skMgr,
+            double cx, double cy, double w, double h, double angleDeg)
+        {
+            double angleRad = angleDeg * Math.PI / 180.0;
+            double axisX =  Math.Cos(angleRad);
+            double axisY = -Math.Sin(angleRad);   // Y-flip for SW
+            double perpX = -axisY;
+            double perpY =  axisX;
+
+            double halfLen    = (h - w) / 2.0;
+            double arcRadius  = w / 2.0;
+
+            // Arc centers
+            double ac1x = cx - halfLen * axisX;
+            double ac1y = cy - halfLen * axisY;
+            double ac2x = cx + halfLen * axisX;
+            double ac2y = cy + halfLen * axisY;
+
+            // Tangent points
+            double tlx = ac1x + arcRadius * perpX,  tly = ac1y + arcRadius * perpY;
+            double trx = ac2x + arcRadius * perpX,  try_ = ac2y + arcRadius * perpY;
+            double brx = ac2x - arcRadius * perpX,  bry = ac2y - arcRadius * perpY;
+            double blx = ac1x - arcRadius * perpX,  bly = ac1y - arcRadius * perpY;
+
+            // Arc midpoints (tips of each semicircle)
+            double mid2x = ac2x + arcRadius * axisX,  mid2y = ac2y + arcRadius * axisY;
+            double mid1x = ac1x - arcRadius * axisX,  mid1y = ac1y - arcRadius * axisY;
+
+            SwAddin.Log($"      stadium: ac1=({ac1x*1000:F3},{ac1y*1000:F3}) ac2=({ac2x*1000:F3},{ac2y*1000:F3}) r={arcRadius*1000:F3}mm");
+            SwAddin.Log($"      tl=({tlx*1000:F3},{tly*1000:F3}) tr=({trx*1000:F3},{try_*1000:F3}) br=({brx*1000:F3},{bry*1000:F3}) bl=({blx*1000:F3},{bly*1000:F3})");
+
+            var line1 = skMgr.CreateLine(tlx, tly, 0, trx, try_, 0);
+            var arc2  = skMgr.Create3PointArc(trx, try_, 0, brx, bry, 0, mid2x, mid2y, 0);
+            var line2 = skMgr.CreateLine(brx, bry, 0, blx, bly, 0);
+            var arc1  = skMgr.Create3PointArc(blx, bly, 0, tlx, tly, 0, mid1x, mid1y, 0);
+
+            SwAddin.Log($"      line1={line1 != null} arc2={arc2 != null} line2={line2 != null} arc1={arc1 != null}");
+            return line1 != null && arc2 != null && line2 != null && arc1 != null;
         }
 
         private void _AddRoundHole(IModelDoc2 doc, JToken hole, double thicknessMm)
@@ -178,29 +246,24 @@ namespace KiCadSync
             double cy = -(double)hole["center"]["y_mm"] / 1000.0;
             double diameter = (double)hole["diameter_mm"] / 1000.0;
             double radius = diameter / 2.0;
-            double thickness = thicknessMm / 1000.0;
 
-            // Select the top face for the sketch
-            _SelectTopFace(doc);
+            doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
             doc.SketchManager.InsertSketch(true);
 
             doc.SketchManager.CreateCircle(cx, cy, 0, cx + radius, cy, 0);
+            var rhSketch = doc.SketchManager.ActiveSketch;
             doc.SketchManager.InsertSketch(true);
 
-            // Extruded cut through all
-            var lastSketch = _GetLastSketch(doc);
-            if (lastSketch != null)
+            if (rhSketch != null)
             {
-                ((IFeature)lastSketch).Select2(false, 0);
+                ((IFeature)rhSketch).Select2(false, 0);
                 doc.FeatureManager.FeatureCut3(
-                    true,   // single direction
-                    false,  // not reverse
-                    false,  // not both directions
+                    false, false, true,
                     (int)swEndConditions_e.swEndCondThroughAll,
-                    0,      // end condition 2
-                    thickness, thickness,
+                    (int)swEndConditions_e.swEndCondThroughAll,
+                    0, 0,
                     false, false, false, false,
-                    0, 0,   // draft angles
+                    0, 0,
                     false, false, false, false,
                     false, true, true,
                     true, true,
@@ -210,48 +273,62 @@ namespace KiCadSync
 
         private void _AddSlot(IModelDoc2 doc, JToken slot, double thicknessMm)
         {
-            double cx = (double)slot["center"]["x_mm"] / 1000.0;
-            double cy = -(double)slot["center"]["y_mm"] / 1000.0;
-            double width = (double)slot["width_mm"] / 1000.0;
-            double length = (double)slot["length_mm"] / 1000.0;
+            double cx       = (double)slot["center"]["x_mm"] / 1000.0;
+            double cy       = -(double)slot["center"]["y_mm"] / 1000.0;
+            double width    = (double)slot["width_mm"]  / 1000.0;
+            double length   = (double)slot["length_mm"] / 1000.0;
             double angleDeg = (double)slot["angle_deg"];
-            double angleRad = angleDeg * Math.PI / 180.0;
-            double thickness = thicknessMm / 1000.0;
 
-            double halfLen = (length - width) / 2.0;
-            double r = width / 2.0;
+            SwAddin.Log($"  Slot ({cx*1000:F3},{cy*1000:F3}) {width*1000:F2}x{length*1000:F2}mm θ={angleDeg}°");
 
-            // Slot endpoints (centers of the end arcs)
-            double dx = Math.Cos(angleRad);
-            double dy = -Math.Sin(angleRad); // flip Y for SW
-            double p1x = cx - halfLen * dx;
-            double p1y = cy - halfLen * dy;
-            double p2x = cx + halfLen * dx;
-            double p2y = cy + halfLen * dy;
-
-            _SelectTopFace(doc);
-            doc.SketchManager.InsertSketch(true);
-
-            // Use the sketch slot tool (straight slot)
-            doc.SketchManager.CreateSketchSlot(
-                (int)swSketchSlotCreationType_e.swSketchSlotCreationType_line,
-                (int)swSketchSlotLengthType_e.swSketchSlotLengthType_CenterCenter,
-                width,
-                p1x, p1y, 0,
-                p2x, p2y, 0,
-                0, 0, 0,   // start direction (unused for line type)
-                1, false);
-
-            doc.SketchManager.InsertSketch(true);
-
-            var lastSketch = _GetLastSketch(doc);
-            if (lastSketch != null)
+            if (length <= width)
             {
-                ((IFeature)lastSketch).Select2(false, 0);
+                SwAddin.Log($"  degenerate slot (length<=width), skipping");
+                return;
+            }
+
+            doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
+            doc.SketchManager.InsertSketch(true);
+
+            _DrawStadium(doc.SketchManager, cx, cy, width, length, angleDeg);
+
+            var slotSketch = doc.SketchManager.ActiveSketch;
+            doc.SketchManager.InsertSketch(true);
+
+            if (slotSketch == null) { SwAddin.Log("  WARN: slot sketch null"); return; }
+
+            ((IFeature)slotSketch).Select2(false, 0);
+            var cutFeat = (IFeature)doc.FeatureManager.FeatureCut3(
+                false, false, true,
+                (int)swEndConditions_e.swEndCondThroughAll,
+                (int)swEndConditions_e.swEndCondThroughAll,
+                0, 0,
+                false, false, false, false,
+                0, 0,
+                false, false, false, false,
+                false, true, true,
+                true, true,
+                false, 0, 0.0, false);
+            SwAddin.Log($"  Slot cut {(cutFeat != null ? "OK" : "FAILED")}");
+        }
+
+        private void _AddCutout(IModelDoc2 doc, JArray segments, double thicknessMm,
+            Dictionary<string, int> entityMap, string prefix)
+        {
+            doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
+            doc.SketchManager.InsertSketch(true);
+            _DrawSegments(doc.SketchManager, segments, entityMap, prefix);
+            var cutoutSketch = doc.SketchManager.ActiveSketch;
+            doc.SketchManager.InsertSketch(true);
+
+            if (cutoutSketch != null)
+            {
+                ((IFeature)cutoutSketch).Select2(false, 0);
                 doc.FeatureManager.FeatureCut3(
-                    true, false, false,
+                    false, false, true,
                     (int)swEndConditions_e.swEndCondThroughAll,
-                    0, thickness, thickness,
+                    (int)swEndConditions_e.swEndCondThroughAll,
+                    0, 0,
                     false, false, false, false,
                     0, 0,
                     false, false, false, false,
@@ -261,30 +338,96 @@ namespace KiCadSync
             }
         }
 
-        private void _AddCutout(IModelDoc2 doc, JArray segments, double thicknessMm,
-            Dictionary<string, int> entityMap, string prefix)
+        private void _AddDrills(IModelDoc2 doc, JArray drills, double thicknessMm)
         {
-            double thickness = thicknessMm / 1000.0;
+            // One sketch + one cut PER FOOTPRINT.
+            // All pad shapes (round circles + oval stadiums) go into the same sketch,
+            // then a single through-all-both FeatureCut3 cuts them all at once.
+            //
+            // Arc convention: dir=-1 (CW) sweeps OUTWARD on each end cap.
+            // (CCW would sweep inward, self-intersecting the oval.)
+            //
+            // Angle convention: KiCad long axis at θ → SW (cos θ, -sin θ) after Y-flip.
 
-            _SelectTopFace(doc);
-            doc.SketchManager.InsertSketch(true);
-            _DrawSegments(doc.SketchManager, segments, entityMap, prefix);
-            doc.SketchManager.InsertSketch(true);
+            // One sketch+cut per footprint. All pad types go in the same sketch.
+            // Formula confirmed: SW overall_length = 2*|P1→P2| + width,
+            // so |P1→P2| = (overall_length - width) / 2 = halfLen.
 
-            var lastSketch = _GetLastSketch(doc);
-            if (lastSketch != null)
+            foreach (var fpDrills in drills)
             {
-                ((IFeature)lastSketch).Select2(false, 0);
-                doc.FeatureManager.FeatureCut3(
-                    true, false, false,
+                var refDes = fpDrills["ref"]?.ToString() ?? "?";
+                var pads = fpDrills["pads"] as JArray;
+                if (pads == null || pads.Count == 0) continue;
+
+                SwAddin.Log($"  Drilling {pads.Count} pads for {refDes}");
+
+                doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
+                doc.SketchManager.InsertSketch(true);
+                bool prevAutoRel = _swApp.GetUserPreferenceToggle(
+                    (int)swUserPreferenceToggle_e.swSketchAutomaticRelations);
+                _swApp.SetUserPreferenceToggle(
+                    (int)swUserPreferenceToggle_e.swSketchAutomaticRelations, false);
+                doc.SketchManager.AutoSolve = false;
+                doc.SketchManager.AddToDB = true;
+
+                int drawn = 0;
+                for (int pi = 0; pi < pads.Count; pi++)
+                {
+                    var pad = pads[pi];
+                    var padType = pad["type"]?.ToString();
+                    double cx = (double)(pad["center"]?["x_mm"] ?? 0) / 1000.0;
+                    double cy = -(double)(pad["center"]?["y_mm"] ?? 0) / 1000.0;
+
+                    if (padType == "round")
+                    {
+                        double r = (double)(pad["diameter_mm"] ?? 0) / 2.0 / 1000.0;
+                        SwAddin.Log($"    [{pi}] round ({cx*1000:F3},{cy*1000:F3}) r={r*1000:F3}mm");
+                        var circ = doc.SketchManager.CreateCircle(cx, cy, 0, cx + r, cy, 0);
+                        if (circ != null) drawn++;
+                        else SwAddin.Log($"    WARN: CreateCircle null");
+                    }
+                    else if (padType == "oval")
+                    {
+                        double w        = (double)(pad["width_mm"]  ?? 0) / 1000.0;
+                        double h        = (double)(pad["height_mm"] ?? 0) / 1000.0;
+                        double angleDeg = (double)(pad["angle_deg"] ?? 0);
+
+                        SwAddin.Log($"    [{pi}] oval ({cx*1000:F3},{cy*1000:F3}) w={w*1000:F3} h={h*1000:F3} θ={angleDeg}°");
+
+                        if (h <= w || w < 1e-6)
+                        {
+                            SwAddin.Log($"    degenerate oval (h<=w), falling back to circle r={w/2*1000:F3}mm");
+                            var circ = doc.SketchManager.CreateCircle(cx, cy, 0, cx + w/2, cy, 0);
+                            if (circ != null) drawn++;
+                            continue;
+                        }
+                        if (_DrawStadium(doc.SketchManager, cx, cy, w, h, angleDeg)) drawn++;
+                    }
+                }
+
+                var sk = doc.SketchManager.ActiveSketch;
+                doc.SketchManager.AddToDB = false;
+                doc.SketchManager.AutoSolve = true;
+                _swApp.SetUserPreferenceToggle(
+                    (int)swUserPreferenceToggle_e.swSketchAutomaticRelations, prevAutoRel);
+                doc.SketchManager.InsertSketch(true);
+
+                SwAddin.Log($"    drawn={drawn}, sketch={sk != null}");
+                if (sk == null || drawn == 0) continue;
+
+                ((IFeature)sk).Select2(false, 0);
+                var cutFeat = (IFeature)doc.FeatureManager.FeatureCut3(
+                    false, false, true,
                     (int)swEndConditions_e.swEndCondThroughAll,
-                    0, thickness, thickness,
+                    (int)swEndConditions_e.swEndCondThroughAll,
+                    0, 0,
                     false, false, false, false,
                     0, 0,
                     false, false, false, false,
                     false, true, true,
                     true, true,
                     false, 0, 0.0, false);
+                SwAddin.Log($"    cut: {(cutFeat != null ? "OK" : "FAILED")} for {refDes}");
             }
         }
 
@@ -336,20 +479,5 @@ namespace KiCadSync
             }
         }
 
-        private ISketch _GetLastSketch(IModelDoc2 doc)
-        {
-            // Walk features in reverse to find the most recently added sketch
-            IFeature feat = (IFeature)doc.FirstFeature();
-            ISketch lastSketch = null;
-
-            while (feat != null)
-            {
-                if (feat.GetTypeName2() == "ProfileFeature")
-                    lastSketch = feat.GetSpecificFeature2() as ISketch;
-                feat = feat.GetNextFeature() as IFeature;
-            }
-
-            return lastSketch;
-        }
     }
 }
