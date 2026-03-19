@@ -223,8 +223,8 @@ namespace KiCadSync
             double cx, double cy, double w, double h, double angleDeg)
         {
             double angleRad = angleDeg * Math.PI / 180.0;
-            double axisX =  Math.Sin(angleRad);
-            double axisY =  Math.Cos(angleRad);
+            double axisX =  Math.Cos(angleRad);
+            double axisY =  Math.Sin(angleRad);
             double perpX = -axisY;
             double perpY =  axisX;
 
