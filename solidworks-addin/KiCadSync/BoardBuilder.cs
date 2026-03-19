@@ -214,29 +214,28 @@ namespace KiCadSync
         }
 
         /// <summary>
-        /// Draws a stadium (slot) profile into the currently open sketch.
+        /// Draws a stadium (slot) profile into the currently open sketch and adds
+        /// tangent/equal/parallel relations so it is fully constrained like a native slot.
         /// Returns true if all 4 entities were created successfully.
         /// Assumes sketch is already open on Front Plane.
         /// </summary>
-        private bool _DrawStadium(ISketchManager skMgr,
+        private bool _DrawStadium(IModelDoc2 doc, ISketchManager skMgr,
             double cx, double cy, double w, double h, double angleDeg)
         {
             double angleRad = angleDeg * Math.PI / 180.0;
-            double axisX =  Math.Cos(angleRad);
-            double axisY = -Math.Sin(angleRad);   // Y-flip for SW
+            double axisX =  Math.Sin(angleRad);
+            double axisY =  Math.Cos(angleRad);
             double perpX = -axisY;
             double perpY =  axisX;
 
-            double halfLen    = (h - w) / 2.0;
-            double arcRadius  = w / 2.0;
+            double halfLen   = (h - w) / 2.0;
+            double arcRadius = w / 2.0;
 
             // Arc centers
-            double ac1x = cx - halfLen * axisX;
-            double ac1y = cy - halfLen * axisY;
-            double ac2x = cx + halfLen * axisX;
-            double ac2y = cy + halfLen * axisY;
+            double ac1x = cx - halfLen * axisX,  ac1y = cy - halfLen * axisY;
+            double ac2x = cx + halfLen * axisX,  ac2y = cy + halfLen * axisY;
 
-            // Tangent points
+            // Tangent points (corners of the bounding rectangle)
             double tlx = ac1x + arcRadius * perpX,  tly = ac1y + arcRadius * perpY;
             double trx = ac2x + arcRadius * perpX,  try_ = ac2y + arcRadius * perpY;
             double brx = ac2x - arcRadius * perpX,  bry = ac2y - arcRadius * perpY;
@@ -247,64 +246,47 @@ namespace KiCadSync
             double mid1x = ac1x - arcRadius * axisX,  mid1y = ac1y - arcRadius * axisY;
 
             SwAddin.Log($"      stadium: ac1=({ac1x*1000:F3},{ac1y*1000:F3}) ac2=({ac2x*1000:F3},{ac2y*1000:F3}) r={arcRadius*1000:F3}mm");
-            SwAddin.Log($"      tl=({tlx*1000:F3},{tly*1000:F3}) tr=({trx*1000:F3},{try_*1000:F3}) br=({brx*1000:F3},{bry*1000:F3}) bl=({blx*1000:F3},{bly*1000:F3})");
 
-            var line1 = skMgr.CreateLine(tlx, tly, 0, trx, try_, 0);
-            var arc2  = skMgr.Create3PointArc(trx, try_, 0, brx, bry, 0, mid2x, mid2y, 0);
-            var line2 = skMgr.CreateLine(brx, bry, 0, blx, bly, 0);
-            var arc1  = skMgr.Create3PointArc(blx, bly, 0, tlx, tly, 0, mid1x, mid1y, 0);
+            var line1 = skMgr.CreateLine(tlx, tly, 0, trx, try_, 0) as ISketchSegment;
+            var arc2  = skMgr.Create3PointArc(trx, try_, 0, brx, bry, 0, mid2x, mid2y, 0) as ISketchSegment;
+            var line2 = skMgr.CreateLine(brx, bry, 0, blx, bly, 0) as ISketchSegment;
+            var arc1  = skMgr.Create3PointArc(blx, bly, 0, tlx, tly, 0, mid1x, mid1y, 0) as ISketchSegment;
 
-            SwAddin.Log($"      line1={line1 != null} arc2={arc2 != null} line2={line2 != null} arc1={arc1 != null}");
-            return line1 != null && arc2 != null && line2 != null && arc1 != null;
+            SwAddin.Log($"      line1={line1!=null} arc2={arc2!=null} line2={line2!=null} arc1={arc1!=null}");
+
+            if (line1 == null || arc2 == null || line2 == null || arc1 == null)
+                return false;
+
+            // Slot-like constraints: tangent at each junction, equal radii, parallel lines
+            _SketchRelation(doc, line1, arc2,  "sgTANGENT");
+            _SketchRelation(doc, arc2,  line2, "sgTANGENT");
+            _SketchRelation(doc, line2, arc1,  "sgTANGENT");
+            _SketchRelation(doc, arc1,  line1, "sgTANGENT");
+            _SketchRelation(doc, arc1,  arc2,  "sgEQUAL");
+            _SketchRelation(doc, line1, line2, "sgPARALLEL");
+
+            return true;
         }
 
-        private bool _DrawStadiumOrSlot(ISketchManager skMgr,
-            double cx, double cy, double w, double h, double angleDeg)
+        private void _SketchRelation(IModelDoc2 doc, ISketchSegment a, ISketchSegment b, string relType)
         {
-            double angleRad = angleDeg * Math.PI / 180.0;
-            double axisX =  Math.Cos(angleRad);
-            double axisY = -Math.Sin(angleRad);
-            double halfLen = (h - w) / 2.0;
-
-            // p1 = final arc center 1; SW preserves p1 position when slot.Length is set
-            double p1x = cx - halfLen * axisX,  p1y = cy - halfLen * axisY;
-            // p2 = arc center 2 at safe large distance (4×w from p1 = 5×w total length)
-            double safeDist = w * 4.0;
-            double p2x = p1x + safeDist * axisX,  p2y = p1y + safeDist * axisY;
-
             try
             {
-                skMgr.AddToDB = false;
-
-                SwAddin.Log($"      CreateSketchSlot: p1=({p1x*1000:F3},{p1y*1000:F3}) safe p2=({p2x*1000:F3},{p2y*1000:F3}) w={w*1000:F3}mm");
-                var slot = skMgr.CreateSketchSlot(
-                    (int)swSketchSlotCreationType_e.swSketchSlotCreationType_line,
-                    (int)swSketchSlotLengthType_e.swSketchSlotLengthType_CenterCenter,
-                    w, p1x, p1y, 0, p2x, p2y, 0, 0, 0, 0, 1, false) as ISketchSlot;
-
-                if (slot != null)
-                {
-                    double targetCtoC = h - w;
-                    SwAddin.Log($"      Resizing length to {targetCtoC*1000:F3}mm (c-to-c)");
-                    slot.Length = targetCtoC;
-                }
-
-                skMgr.AddToDB = true;
-
-                if (slot != null)
-                {
-                    SwAddin.Log($"      CreateSketchSlot OK");
-                    return true;
-                }
-                SwAddin.Log($"      CreateSketchSlot returned null, falling back to stadium");
+                a.Select4(false, null);
+                b.Select4(true, null);
+                doc.SketchAddConstraints(relType);
+                doc.ClearSelection2(true);
             }
             catch (Exception ex)
             {
-                skMgr.AddToDB = true;
-                SwAddin.Log($"      CreateSketchSlot threw: {ex.Message}, falling back");
+                SwAddin.Log($"      _SketchRelation({relType}) failed: {ex.Message}");
             }
+        }
 
-            return _DrawStadium(skMgr, cx, cy, w, h, angleDeg);
+        private bool _DrawStadiumOrSlot(IModelDoc2 doc, ISketchManager skMgr,
+            double cx, double cy, double w, double h, double angleDeg)
+        {
+            return _DrawStadium(doc, skMgr, cx, cy, w, h, angleDeg);
         }
 
         private void _AddRoundHole(IModelDoc2 doc, JToken hole, double thicknessMm)
@@ -360,7 +342,7 @@ namespace KiCadSync
             doc.SketchManager.InsertSketch(true);
             _BeginDraw(doc);
 
-            _DrawStadiumOrSlot(doc.SketchManager, cx, cy, width, length, angleDeg);
+            _DrawStadiumOrSlot(doc, doc.SketchManager, cx, cy, width, length, angleDeg);
 
             var slotSketch = doc.SketchManager.ActiveSketch;
             _EndDraw(doc);
@@ -469,7 +451,7 @@ namespace KiCadSync
                             if (circ != null) drawn++;
                             continue;
                         }
-                        if (_DrawStadiumOrSlot(doc.SketchManager, cx, cy, w, h, angleDeg)) drawn++;
+                        if (_DrawStadiumOrSlot(doc, doc.SketchManager, cx, cy, w, h, angleDeg)) drawn++;
                     }
                 }
 
