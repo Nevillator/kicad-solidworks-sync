@@ -19,6 +19,7 @@ namespace KiCadSync.UI
         private Label _lblSyncDir = null!;
         private Button _btnBrowse = null!;
         private TextBox _txtSyncDir = null!;
+        private CheckBox _chkHideImport = null!;
         private Label _lblStatus = null!;
 
         private string? _syncDir;
@@ -36,36 +37,43 @@ namespace KiCadSync.UI
         {
             _swApp = swApp;
 
-            // Load saved sync dir (env var takes priority)
+            // Load saved settings (env var overrides sync_dir)
+            var (savedDir, hideImport) = LoadSettings();
             _syncDir = System.Environment.GetEnvironmentVariable("KICAD_SW_SYNC_DIR");
             if (string.IsNullOrEmpty(_syncDir))
-                _syncDir = LoadSavedSyncDir();
+                _syncDir = savedDir;
+            _chkHideImport.Checked = hideImport;
 
             if (!string.IsNullOrEmpty(_syncDir))
                 _txtSyncDir.Text = _syncDir;
         }
 
-        private static string? LoadSavedSyncDir()
+        private (string? syncDir, bool hideImport) LoadSettings()
         {
             try
             {
                 if (File.Exists(SettingsPath))
                 {
                     var json = JObject.Parse(File.ReadAllText(SettingsPath));
-                    return json["sync_dir"]?.ToString();
+                    return (json["sync_dir"]?.ToString(),
+                            json["hide_during_import"]?.ToObject<bool>() ?? false);
                 }
             }
             catch { }
-            return null;
+            return (null, false);
         }
 
-        private static void SaveSyncDir(string dir)
+        private void SaveSettings()
         {
             try
             {
                 var folder = Path.GetDirectoryName(SettingsPath)!;
                 Directory.CreateDirectory(folder);
-                var json = new JObject { ["sync_dir"] = dir };
+                var json = new JObject
+                {
+                    ["sync_dir"]           = _syncDir,
+                    ["hide_during_import"] = _chkHideImport.Checked
+                };
                 File.WriteAllText(SettingsPath, json.ToString());
             }
             catch { }
@@ -131,6 +139,16 @@ namespace KiCadSync.UI
 
             layout.Controls.Add(dirPanel);
 
+            // Hide during import checkbox
+            _chkHideImport = new CheckBox
+            {
+                Text = "Hide SW during import",
+                AutoSize = true,
+                Margin = new Padding(0, 0, 0, 8)
+            };
+            _chkHideImport.CheckedChanged += (_, _) => SaveSettings();
+            layout.Controls.Add(_chkHideImport);
+
             // Pull button
             _btnPull = new Button
             {
@@ -174,7 +192,7 @@ namespace KiCadSync.UI
             {
                 _syncDir = path;
                 _txtSyncDir.Text = _syncDir;
-                SaveSyncDir(_syncDir);
+                SaveSettings();
             }
         }
 
@@ -231,13 +249,21 @@ namespace KiCadSync.UI
             if (syncDir == null) return;
 
             _lblStatus.ForeColor = Color.Gray;
-            _lblStatus.Text = "Pulling...";
+            _lblStatus.Text = "Starting pull...";
+            _lblStatus.Update();
             _btnPull.Enabled = false;
+            _btnPush.Enabled = false;
+
+            var progress = new Progress<string>(msg =>
+            {
+                _lblStatus.Text = msg;
+                _lblStatus.Update();
+            });
 
             try
             {
                 var mgr = new SyncManager(_swApp, syncDir);
-                var doc = mgr.PullFromKiCad(out var changes);
+                var doc = mgr.PullFromKiCad(out var changes, progress, _chkHideImport.Checked);
 
                 _lblStatus.ForeColor = Color.Green;
                 _lblStatus.Text = $"Pulled {changes.Count} item(s).";
@@ -245,13 +271,14 @@ namespace KiCadSync.UI
             catch (Exception ex)
             {
                 _lblStatus.ForeColor = Color.Red;
-                _lblStatus.Text = $"Pull failed.";
+                _lblStatus.Text = "Pull failed.";
                 MessageBox.Show($"Pull failed:\n{ex.Message}",
                     "Pull Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
             finally
             {
                 _btnPull.Enabled = true;
+                _btnPush.Enabled = true;
             }
         }
 
@@ -340,8 +367,47 @@ namespace KiCadSync.UI
             SIGDN_FILESYSPATH = 0x80058000,
         }
 
+        /// <summary>
+        /// Sync our WinForms size to the Win32 parent (task pane container) client rect,
+        /// then do a full repaint. Call this when the task pane tab is activated.
+        /// </summary>
+        public void SyncSizeToParent()
+        {
+            var parent = _GetParent(Handle);
+            if (parent == IntPtr.Zero) { Refresh(); return; }
+            _GetClientRect(parent, out var r);
+            var sz = new Size(r.right - r.left, r.bottom - r.top);
+            if (sz.Width > 0 && sz.Height > 0 && Size != sz)
+            {
+                Size = sz;
+                PerformLayout();
+            }
+            Refresh();
+        }
+
+        [DllImport("user32.dll", EntryPoint = "GetParent")]
+        private static extern IntPtr _GetParent(IntPtr hwnd);
+
+        [DllImport("user32.dll", EntryPoint = "GetClientRect")]
+        private static extern bool _GetClientRect(IntPtr hwnd, out _RECT rect);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct _RECT { public int left, top, right, bottom; }
+
         [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
         private static extern void SHCreateItemFromParsingName(
             string pszPath, IntPtr pbc, [In] Guid riid, out IShellItem ppv);
+
+        private void InitializeComponent()
+        {
+            this.SuspendLayout();
+            // 
+            // SyncTaskPane
+            // 
+            this.Name = "SyncTaskPane";
+            this.Size = new System.Drawing.Size(807, 771);
+            this.ResumeLayout(false);
+
+        }
     }
 }

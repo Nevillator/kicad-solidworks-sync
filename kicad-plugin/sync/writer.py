@@ -1,16 +1,25 @@
 """Export KiCad board data to the sync directory (ecad_to_mcad)."""
 
+import hashlib
 import json
 import math
-import subprocess
+import shutil
 from pathlib import Path
 
 import pcbnew
 
 
+def _md5(path: str) -> str:
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(65536), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
 def push(board: pcbnew.BOARD, sync_dir: Path) -> list:
     """
-    Export board STEP, layout JSON, and board outline JSON to sync_dir/ecad_to_mcad/.
+    Export layout JSON, board outline JSON, and per-component STEPs to sync_dir/ecad_to_mcad/.
     Returns a list of change records.
     """
     out_dir = sync_dir / "ecad_to_mcad"
@@ -18,13 +27,12 @@ def push(board: pcbnew.BOARD, sync_dir: Path) -> list:
 
     changes = []
 
-    # Export STEP (for component 3D models)
-    step_path = out_dir / "board.step"
-    _export_step(board, step_path)
-    changes.append({"type": "3d_model_updated"})
+    # Export per-component STEP models first; returns {ref: model_name} so that
+    # layout.json uses the exact same filename that was copied to components/.
+    ref_model_map = _export_component_models(board, sync_dir)
 
     # Export layout JSON (component positions, origins, model offsets)
-    layout = _build_layout(board)
+    layout = _build_layout(board, ref_model_map)
     with open(out_dir / "layout.json", "w") as f:
         json.dump(layout, f, indent=2)
 
@@ -33,8 +41,80 @@ def push(board: pcbnew.BOARD, sync_dir: Path) -> list:
     with open(out_dir / "board_outline.json", "w") as f:
         json.dump(outline, f, indent=2)
     changes.append({"type": "board_outline_updated"})
+    changes.append({"type": "3d_model_updated"})
 
     return changes
+
+
+def _export_component_models(board: pcbnew.BOARD, sync_dir: Path) -> dict:
+    """
+    Copy per-component STEP files to ecad_to_mcad/components/.
+    Returns {ref: model_name} mapping the primary (first readable) STEP model
+    for each footprint — used by _build_layout to write the model_name field.
+    """
+    components_dir = sync_dir / "ecad_to_mcad" / "components"
+    components_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path = components_dir / "manifest.json"
+
+    if manifest_path.exists():
+        try:
+            with open(manifest_path) as f:
+                manifest = json.load(f)
+        except Exception:
+            manifest = {"components": {}}
+    else:
+        manifest = {"components": {}}
+
+    ref_model_map = {}  # ref → model_name (stem of first valid STEP)
+    synced = 0
+
+    for fp in board.GetFootprints():
+        if _is_mounting_hole(fp):
+            continue
+        ref = fp.GetReference()
+        for model in fp.Models():
+            name = Path(model.m_Filename).stem
+            if not name:
+                continue
+            try:
+                src_path = pcbnew.ExpandEnvVarSubstitutions(model.m_Filename, None)
+            except Exception:
+                src_path = None
+            if not src_path:
+                continue
+            src_lower = src_path.lower()
+            if not (src_lower.endswith(".step") or src_lower.endswith(".stp")):
+                continue
+            dest = components_dir / f"{name}.step"
+            try:
+                src_hash = _md5(src_path)
+            except Exception:
+                continue  # file not readable — skip (path may exist but file absent)
+
+            # Record this as the primary model for the footprint (first readable STEP)
+            if ref not in ref_model_map:
+                ref_model_map[ref] = name
+
+            # Copy only if new or hash changed
+            entry = manifest["components"].get(name)
+            existing_hash = entry["hash"] if isinstance(entry, dict) else ""
+            if entry is not None and src_hash == existing_hash:
+                continue
+
+            try:
+                shutil.copy(src_path, str(dest))
+                manifest["components"][name] = {"path": f"components/{name}.step", "hash": src_hash}
+                synced += 1
+            except Exception:
+                pass
+
+    with open(manifest_path, "w") as f:
+        json.dump(manifest, f, indent=2)
+
+    if synced:
+        print(f"[KiCad→SW] Synced {synced} component model(s) in {components_dir}")
+
+    return ref_model_map
 
 
 def check_drill_origin(board: pcbnew.BOARD) -> str | None:
@@ -56,27 +136,10 @@ def check_drill_origin(board: pcbnew.BOARD) -> str | None:
     return None
 
 
-# ── STEP export ────────────────────────────────────────────────────────────
-
-
-def _export_step(board: pcbnew.BOARD, out_path: Path):
-    board_path = board.GetFileName()
-    if not board_path:
-        raise RuntimeError("Board must be saved to disk before exporting STEP.")
-    subprocess.run([
-        "kicad-cli", "pcb", "export", "step",
-        "--output", str(out_path),
-        "--drill-origin",
-        "--subst-models",
-        "--no-dnp",
-        str(board_path),
-    ], check=True)
-
-
 # ── Layout export ──────────────────────────────────────────────────────────
 
 
-def _build_layout(board: pcbnew.BOARD) -> dict:
+def _build_layout(board: pcbnew.BOARD, ref_model_map: dict) -> dict:
     settings = board.GetDesignSettings()
     origin = settings.GetAuxOrigin()
     origin_x = pcbnew.ToMM(origin.x)
@@ -88,9 +151,11 @@ def _build_layout(board: pcbnew.BOARD) -> dict:
     components = []
     for fp in board.GetFootprints():
         pos = fp.GetPosition()
+        ref = fp.GetReference()
+        model_name = ref_model_map.get(ref)  # exact name of the copied STEP file
 
         comp = {
-            "ref": fp.GetReference(),
+            "ref": ref,
             "value": fp.GetValue(),
             "footprint": fp.GetFPID().GetUniStringLibItemName(),
             "layer": "F.Cu" if fp.GetLayer() == pcbnew.F_Cu else "B.Cu",
@@ -99,23 +164,25 @@ def _build_layout(board: pcbnew.BOARD) -> dict:
                 "y_mm": pcbnew.ToMM(pos.y) - origin_y,
                 "rotation_deg": fp.GetOrientationDegrees(),
             },
-            "has_3d_model": len(fp.Models()) > 0,
+            "has_3d_model": model_name is not None,
         }
 
-        # Add 3D model offset and rotation if a model exists
-        models = fp.Models()
-        if len(models) > 0:
-            model = models[0]  # primary 3D model
-            comp["model_offset"] = {
-                "x_mm": model.m_Offset.x,
-                "y_mm": model.m_Offset.y,
-                "z_mm": model.m_Offset.z,
-            }
-            comp["model_rotation"] = {
-                "x_deg": model.m_Rotation.x,
-                "y_deg": model.m_Rotation.y,
-                "z_deg": model.m_Rotation.z,
-            }
+        if model_name is not None:
+            # Locate the matching model object to get its offset/rotation
+            for m in fp.Models():
+                if Path(m.m_Filename).stem == model_name:
+                    comp["model_offset"] = {
+                        "x_mm": m.m_Offset.x,
+                        "y_mm": m.m_Offset.y,
+                        "z_mm": m.m_Offset.z,
+                    }
+                    comp["model_rotation"] = {
+                        "x_deg": m.m_Rotation.x,
+                        "y_deg": m.m_Rotation.y,
+                        "z_deg": m.m_Rotation.z,
+                    }
+                    comp["model_name"] = model_name
+                    break
 
         components.append(comp)
 
@@ -181,8 +248,9 @@ def _build_board_outline(board: pcbnew.BOARD) -> dict:
         else:
             cutouts.append(loop)
 
-    # Extract pad drill holes
-    drills = _extract_drills(board, origin_x, origin_y)
+    # Extract pad drill holes and mounting holes
+    drills         = _extract_drills(board, origin_x, origin_y)
+    mounting_holes = _extract_mounting_holes(board, origin_x, origin_y)
 
     return {
         "schema_version": "1.0",
@@ -190,13 +258,50 @@ def _build_board_outline(board: pcbnew.BOARD) -> dict:
         "holes": holes,
         "cutouts": cutouts,
         "drills": drills,
+        "mounting_holes": mounting_holes,
     }
 
 
+def _is_mounting_hole(fp) -> bool:
+    """Return True if this footprint is a mounting hole (not a component pad)."""
+    lib  = fp.GetFPID().GetLibNickname()
+    name = fp.GetFPID().GetUniStringLibItemName()
+    return lib == "MountingHole" or "MountingHole" in name
+
+
+def _extract_mounting_holes(board: pcbnew.BOARD, origin_x: float, origin_y: float) -> list:
+    """Extract mounting hole footprints as Hole Wizard candidates."""
+    import re
+    holes = []
+    for fp in board.GetFootprints():
+        if not _is_mounting_hole(fp):
+            continue
+        name = fp.GetFPID().GetUniStringLibItemName()
+        m = re.search(r'_(M\d+(?:\.\d+)?)(?:\b|_)', name)
+        screw_size = m.group(1) if m else None
+        for pad in fp.Pads():
+            drill = pad.GetDrillSize()
+            if drill.x <= 0:
+                continue
+            pos = pad.GetPosition()
+            holes.append({
+                "center": {
+                    "x_mm": pcbnew.ToMM(pos.x) - origin_x,
+                    "y_mm": pcbnew.ToMM(pos.y) - origin_y,
+                },
+                "diameter_mm": pcbnew.ToMM(drill.x),
+                "screw_size":  screw_size,  # e.g. "M3", or None
+            })
+            break  # one drill pad per mounting hole footprint
+    return holes
+
+
 def _extract_drills(board: pcbnew.BOARD, origin_x: float, origin_y: float) -> list:
-    """Extract drill holes grouped by footprint reference."""
+    """Extract drill holes grouped by footprint reference (excludes mounting holes)."""
     footprint_drills = []
     for fp in board.GetFootprints():
+        if _is_mounting_hole(fp):
+            continue  # handled separately as Hole Wizard features
         pads = []
         for pad in fp.Pads():
             drill = pad.GetDrillSize()
@@ -250,12 +355,16 @@ def _drawing_to_segments(drawing, origin_x: float, origin_y: float) -> list:
         }]
 
     if shape == pcbnew.SHAPE_T_ARC:
-        return [{
-            "type": "arc",
-            "start": _point(drawing.GetStart(), origin_x, origin_y),
-            "mid":   _point(drawing.GetArcMid(), origin_x, origin_y),
-            "end":   _point(drawing.GetEnd(), origin_x, origin_y),
-        }]
+        start = _point(drawing.GetStart(), origin_x, origin_y)
+        mid   = _point(drawing.GetArcMid(), origin_x, origin_y)
+        end   = _point(drawing.GetEnd(), origin_x, origin_y)
+        # Skip degenerate arcs where all three points are identical (zero-size pad markers)
+        if (abs(start["x_mm"] - end["x_mm"]) < _TOLERANCE and
+                abs(start["y_mm"] - end["y_mm"]) < _TOLERANCE and
+                abs(start["x_mm"] - mid["x_mm"]) < _TOLERANCE and
+                abs(start["y_mm"] - mid["y_mm"]) < _TOLERANCE):
+            return []
+        return [{"type": "arc", "start": start, "mid": mid, "end": end}]
 
     if shape == pcbnew.SHAPE_T_CIRCLE:
         center = drawing.GetCenter()

@@ -40,15 +40,23 @@ namespace KiCadSync
                 SwApp.SetAddinCallbackInfo2(0, this, cookie);
                 Log("Callback info set.");
 
-                _taskpaneView = SwApp.CreateTaskpaneView3(
-                    "", "KiCad Sync");
-                Log($"Taskpane view created: {_taskpaneView != null}");
+                var resDir = Path.GetDirectoryName(typeof(SwAddin).Assembly.Location)!;
+                var imageList = new string[]
+                {
+                    Path.Combine(resDir, "Resources", "icon_20.png"),
+                    Path.Combine(resDir, "Resources", "icon_32.png"),
+                    Path.Combine(resDir, "Resources", "icon_40.png"),
+                    Path.Combine(resDir, "Resources", "icon_64.png"),
+                    Path.Combine(resDir, "Resources", "icon_96.png"),
+                    Path.Combine(resDir, "Resources", "icon_128.png"),
+                };
+                _taskpaneView = SwApp.CreateTaskpaneView3(imageList, "KiCad Sync");
+                Log($"CreateTaskpaneView3 result: {_taskpaneView != null}");
 
                 if (_taskpaneView == null)
                 {
-                    Log("CreateTaskpaneView3 returned null, trying CreateTaskpaneView2...");
+                    Log("Falling back to CreateTaskpaneView2");
                     _taskpaneView = SwApp.CreateTaskpaneView2("", "KiCad Sync");
-                    Log($"Taskpane view2 created: {_taskpaneView != null}");
                 }
 
                 _taskpane = new SyncTaskPane();
@@ -57,6 +65,8 @@ namespace KiCadSync
 
                 bool attached = _taskpaneView.DisplayWindowFromHandlex64(_taskpane.Handle.ToInt64());
                 Log($"DisplayWindowFromHandlex64 result: {attached}");
+
+                (_taskpaneView as DTaskpaneViewEvents_Event)!.TaskPaneActivateNotify += OnTaskPaneActivated;
 
                 _taskpane.Init(SwApp);
                 Log("Taskpane init complete. ConnectToSW complete.");
@@ -77,6 +87,8 @@ namespace KiCadSync
                 _taskpane?.Dispose();
                 if (_taskpaneView != null)
                 {
+                    if (_taskpaneView is DTaskpaneViewEvents_Event tpEvents)
+                        tpEvents.TaskPaneActivateNotify -= OnTaskPaneActivated;
                     _taskpaneView.DeleteView();
                     Marshal.ReleaseComObject(_taskpaneView);
                 }
@@ -90,6 +102,12 @@ namespace KiCadSync
         }
 
         #endregion
+
+        private int OnTaskPaneActivated()
+        {
+            _taskpane?.BeginInvoke(new Action(() => _taskpane.SyncSizeToParent()));
+            return 0;
+        }
 
         #region COM Registration
 

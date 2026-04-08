@@ -40,12 +40,11 @@ _sync_frame = None  # singleton instance
 
 
 class SyncFrame(wx.Frame):
-    def __init__(self, parent, board: pcbnew.BOARD):
+    def __init__(self, parent):
         super().__init__(parent, title="KiCad \u2194 SolidWorks Sync",
                          size=(340, 360),
                          style=wx.DEFAULT_FRAME_STYLE & ~wx.MAXIMIZE_BOX)
-        self._board = board
-        self._cfg = load_config(board)
+        self._cfg = load_config(self._get_board())
         self._sync_dir = self._cfg.get("sync_dir", "")
 
         panel = wx.Panel(self)
@@ -97,6 +96,12 @@ class SyncFrame(wx.Frame):
         if not self._sync_dir:
             self._status.SetLabel("Set a sync directory to get started.")
 
+    def _get_board(self) -> pcbnew.BOARD:
+        board = pcbnew.GetBoard()
+        if not board or not hasattr(board, 'GetFileName'):
+            raise RuntimeError("Could not access board — try restarting KiCad.")
+        return board
+
     def _on_close(self, event):
         global _sync_frame
         _sync_frame = None
@@ -106,7 +111,7 @@ class SyncFrame(wx.Frame):
         self._sync_dir = path
         self._txt_dir.SetValue(path)
         self._cfg["sync_dir"] = path
-        save_config(self._board, self._cfg)
+        save_config(self._get_board(), self._cfg)
         self._status.SetLabel("Sync directory set.")
 
     def _on_browse(self, event):
@@ -117,7 +122,7 @@ class SyncFrame(wx.Frame):
         dlg.Destroy()
 
     def _on_new_dir(self, event):
-        board_path = self._board.GetFileName()
+        board_path = self._get_board().GetFileName()
         default = str(Path(board_path).parent) if board_path else ""
         dlg = wx.DirDialog(self, "Select parent folder for new sync directory",
                            defaultPath=default)
@@ -156,7 +161,7 @@ class SyncFrame(wx.Frame):
         if not sync_dir:
             return
 
-        board = self._board
+        board = self._get_board()
 
         # Check drill origin
         origin_warning = writer.check_drill_origin(board)
@@ -192,7 +197,7 @@ class SyncFrame(wx.Frame):
         if not sync_dir:
             return
 
-        board = self._board
+        board = self._get_board()
 
         pending = reader.get_pending_changes(sync_dir)
         if not pending:
@@ -268,19 +273,13 @@ class SyncPlugin(pcbnew.ActionPlugin):
     def Run(self):
         global _sync_frame
 
-        board = pcbnew.GetBoard()
-        if not board.GetFileName():
-            wx.MessageBox("Save the board first so settings can be stored.",
-                          "KiCad Sync", wx.OK | wx.ICON_WARNING)
-            return
-
         # If already open, just bring it to front
         if _sync_frame is not None:
             _sync_frame.Raise()
             _sync_frame.Show()
             return
 
-        _sync_frame = SyncFrame(None, board)
+        _sync_frame = SyncFrame(None)
         _sync_frame.Show()
 
 

@@ -3,6 +3,7 @@
   <PropertyGroup>
     <TargetFramework>net48</TargetFramework>
     <PlatformTarget>x64</PlatformTarget>
+    <Platforms>x64</Platforms>
     <AssemblyName>KiCadSync</AssemblyName>
     <RootNamespace>KiCadSync</RootNamespace>
     <LangVersion>9.0</LangVersion>
@@ -10,7 +11,7 @@
     <!-- COM registration done manually via regasm at install time -->
     <RegisterForComInterop>false</RegisterForComInterop>
     <GenerateAssemblyInfo>true</GenerateAssemblyInfo>
-    <OutputPath>bin\x64\Debug\staging\</OutputPath>
+    <OutputPath>bin\x64\$(Configuration)\staging\</OutputPath>
   </PropertyGroup>
 
   <!-- SolidWorks interop assemblies — adjust path to match your SW installation -->
@@ -40,6 +41,28 @@
   <ItemGroup>
     <Reference Include="System.Windows.Forms" />
     <Reference Include="Microsoft.VisualBasic" />
+  </ItemGroup>
+
+  <!-- Task pane tab icons (HiDPI sizes for CreateTaskpaneView3) -->
+  <ItemGroup>
+    <Content Include="Resources\icon_20.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\icon_32.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\icon_40.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\icon_64.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\icon_96.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
+    <Content Include="Resources\icon_128.png">
+      <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

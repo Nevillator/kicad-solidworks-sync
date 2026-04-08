@@ -1,0 +1,7 @@
+<Project>
+  <!-- Default SolidWorks installation path — override by setting the SOLIDWORKS_PATH
+       environment variable (e.g. in System Properties or a CI pipeline). -->
+  <PropertyGroup>
+    <SOLIDWORKS_PATH Condition="'$(SOLIDWORKS_PATH)' == ''">C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS</SOLIDWORKS_PATH>
+  </PropertyGroup>
+</Project>
